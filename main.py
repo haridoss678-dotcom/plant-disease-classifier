@@ -1,15 +1,16 @@
 import os
 import json
 
-import numpy as np
-import streamlit as st
-import tensorflow as tf
 from PIL import Image
+import numpy as np
+import tensorflow as tf
+import streamlit as st
+from huggingface_hub import hf_hub_download
 
 
-# ============================================================
-# STREAMLIT CONFIGURATION
-# ============================================================
+# --------------------------------------------------
+# STREAMLIT CONFIG
+# --------------------------------------------------
 
 st.set_page_config(
     page_title="Plant Disease Classifier",
@@ -18,318 +19,248 @@ st.set_page_config(
 )
 
 
-# ============================================================
-# PATH SETUP
-# ============================================================
+# --------------------------------------------------
+# PATHS
+# --------------------------------------------------
 
-WORKING_DIR = os.path.dirname(os.path.abspath(__file__))
+working_dir = os.path.dirname(os.path.abspath(__file__))
 
-MODEL_PATH = os.path.join(
-    WORKING_DIR,
+class_indices_path = os.path.join(
+    working_dir,
+    "class_indices.json"
+)
+
+local_model_path = os.path.join(
+    working_dir,
     "trained_model",
     "plant_disease_pred_model.h5"
 )
 
-CLASS_INDICES_PATH = os.path.join(
-    WORKING_DIR,
-    "class_indices.json"
-)
+
+# --------------------------------------------------
+# HUGGING FACE MODEL DETAILS
+# --------------------------------------------------
+
+HF_REPO_ID = "HaridossB/plant-disease-classifier"
+HF_MODEL_FILENAME = "plant_disease_pred_model.h5"
 
 
-# ============================================================
-# MODEL LOADING
-# ============================================================
-
-if not os.path.exists(MODEL_PATH):
-    st.error(
-        "❌ Model file not found.\n\n"
-        f"Expected location:\n{MODEL_PATH}"
-    )
-    st.stop()
-
+# --------------------------------------------------
+# DOWNLOAD / GET MODEL
+# --------------------------------------------------
 
 @st.cache_resource
-def load_trained_model():
-    """
-    Load the trained TensorFlow/Keras model only once.
-
-    compile=False is used because this application is
-    performing inference only and does not need the
-    original optimizer/training configuration.
-    """
-
-    return tf.keras.models.load_model(
-        MODEL_PATH,
-        compile=False
-    )
-
-
-try:
-    model = load_trained_model()
-
-except Exception as e:
-    st.error("❌ Failed to load the trained model.")
-    st.exception(e)
-    st.stop()
-
-
-# ============================================================
-# CLASS LABEL LOADING
-# ============================================================
-
-if not os.path.exists(CLASS_INDICES_PATH):
-    st.error(
-        "❌ class_indices.json was not found.\n\n"
-        f"Expected location:\n{CLASS_INDICES_PATH}"
-    )
-    st.stop()
-
-
-try:
-
-    with open(
-        CLASS_INDICES_PATH,
-        "r",
-        encoding="utf-8"
-    ) as file:
-
-        class_indices = json.load(file)
-
-    # JSON object keys are strings.
-    # Convert them to integers because model prediction
-    # returns an integer class index.
-
-    class_indices = {
-        int(key): value
-        for key, value in class_indices.items()
-    }
-
-except Exception as e:
-
-    st.error(
-        "❌ Failed to load class_indices.json."
-    )
-
-    st.exception(e)
-    st.stop()
-
-
-# ============================================================
-# IMAGE PREPROCESSING
-# ============================================================
-
-def load_and_preprocess_image(
-    image,
-    target_size=(224, 224)
-):
-    """
-    Prepare uploaded image for the trained model.
-
-    Steps:
-    1. Convert image to RGB
-    2. Resize to 224x224
-    3. Convert to NumPy array
-    4. Convert to float32
-    5. Normalize pixel values to 0-1
-    6. Add batch dimension
-    """
-
-    # Ensure exactly 3 channels
-    image = image.convert("RGB")
-
-    # Resize to model input size
-    image = image.resize(target_size)
-
-    # Convert PIL image to NumPy array
-    image_array = np.array(image)
-
-    # Convert datatype
-    image_array = image_array.astype(
-        np.float32
-    )
-
-    # Normalize pixel values
-    image_array = image_array / 255.0
-
-    # Add batch dimension
-    #
-    # Before:
-    # (224, 224, 3)
-    #
-    # After:
-    # (1, 224, 224, 3)
-
-    image_array = np.expand_dims(
-        image_array,
-        axis=0
-    )
-
-    return image_array
-
-
-# ============================================================
-# PREDICTION FUNCTION
-# ============================================================
-
-def predict_image_class(
-    trained_model,
-    image,
-    labels
-):
-    """
-    Predict the disease class of an uploaded image.
-    """
-
-    # Preprocess image
-    processed_image = load_and_preprocess_image(
-        image
-    )
-
-    # Run model prediction
-    predictions = trained_model.predict(
-        processed_image,
-        verbose=0
-    )
-
-    # Find class with highest probability
-    predicted_index = int(
-        np.argmax(predictions[0])
-    )
-
-    # Get confidence
-    confidence = float(
-        np.max(predictions[0])
-    )
-
-    # Check whether predicted index exists
-    if predicted_index not in labels:
-
-        raise ValueError(
-            "Predicted class index "
-            f"{predicted_index} was not found "
-            "in class_indices.json."
-        )
-
-    # Get disease name
-    predicted_label = labels[
-        predicted_index
-    ]
-
-    return predicted_label, confidence
-
-
-# ============================================================
-# APPLICATION HEADER
-# ============================================================
-
-st.title("🌿 Plant Disease Classifier")
-
-st.write(
-    "Upload a plant leaf image and the trained "
-    "AI model will predict the corresponding "
-    "plant disease."
-)
-
-
-# ============================================================
-# IMAGE UPLOADER
-# ============================================================
-
-uploaded_image = st.file_uploader(
-    "📂 Upload Leaf Image",
-    type=[
-        "png",
-        "jpg",
-        "jpeg"
-    ]
-)
-
-
-# ============================================================
-# IMAGE PROCESSING
-# ============================================================
-
-if uploaded_image is not None:
-
-    # --------------------------------------------------------
-    # Open image
-    # --------------------------------------------------------
+def get_model():
 
     try:
 
-        image = Image.open(
-            uploaded_image
+        # ------------------------------------------
+        # 1. LOCAL MODEL EXISTS
+        # ------------------------------------------
+
+        if os.path.exists(local_model_path):
+
+            st.info("📦 Loading local model...")
+
+            model_path = local_model_path
+
+        # ------------------------------------------
+        # 2. LOCAL MODEL DOES NOT EXIST
+        #    DOWNLOAD FROM HUGGING FACE
+        # ------------------------------------------
+
+        else:
+
+            st.info("☁️ Downloading model from Hugging Face...")
+
+            model_path = hf_hub_download(
+                repo_id=HF_REPO_ID,
+                filename=HF_MODEL_FILENAME
+            )
+
+        # ------------------------------------------
+        # 3. LOAD MODEL
+        # ------------------------------------------
+
+        model = tf.keras.models.load_model(
+            model_path,
+            compile=False
         )
+
+        return model
 
     except Exception as e:
 
-        st.error(
-            "❌ Unable to read the uploaded image."
-        )
+        st.error("❌ Failed to load the model.")
 
         st.exception(e)
 
         st.stop()
 
 
-    # --------------------------------------------------------
-    # Display image and prediction section
-    # --------------------------------------------------------
+# --------------------------------------------------
+# LOAD MODEL
+# --------------------------------------------------
 
-    col1, col2 = st.columns(2)
-
-
-    # --------------------------------------------------------
-    # IMAGE PREVIEW
-    # --------------------------------------------------------
-
-    with col1:
-
-        st.image(
-            image,
-            caption="Uploaded Leaf Image",
-            width=200
-        )
+model = get_model()
 
 
-    # --------------------------------------------------------
-    # CLASSIFICATION
-    # --------------------------------------------------------
+# --------------------------------------------------
+# LOAD CLASS INDICES
+# --------------------------------------------------
 
-    with col2:
+if not os.path.exists(class_indices_path):
 
-        if st.button(
-            "🔍 Classify",
-            type="primary"
-        ):
+    st.error("❌ class_indices.json not found.")
 
-            try:
+    st.stop()
 
-                predicted_label, confidence = (
-                    predict_image_class(
-                        model,
-                        image,
-                        class_indices
+
+try:
+
+    with open(class_indices_path, "r") as f:
+
+        class_indices = json.load(f)
+
+    class_indices = {
+        int(k): v
+        for k, v in class_indices.items()
+    }
+
+except Exception as e:
+
+    st.error("❌ Failed to load class_indices.json.")
+
+    st.exception(e)
+
+    st.stop()
+
+
+# --------------------------------------------------
+# IMAGE PREPROCESSING
+# --------------------------------------------------
+
+def load_and_preprocess_image(
+    image,
+    target_size=(224, 224)
+):
+
+    img = image.convert("RGB")
+
+    img = img.resize(target_size)
+
+    img_array = np.array(img)
+
+    img_array = img_array.astype("float32") / 255.0
+
+    img_array = np.expand_dims(
+        img_array,
+        axis=0
+    )
+
+    return img_array
+
+
+# --------------------------------------------------
+# PREDICTION
+# --------------------------------------------------
+
+def predict_image_class(
+    model,
+    image,
+    class_indices
+):
+
+    processed_img = load_and_preprocess_image(
+        image
+    )
+
+    predictions = model.predict(
+        processed_img,
+        verbose=0
+    )
+
+    predicted_index = int(
+        np.argmax(predictions[0])
+    )
+
+    confidence = float(
+        np.max(predictions[0])
+    )
+
+    predicted_label = class_indices.get(
+        predicted_index,
+        f"Unknown class ({predicted_index})"
+    )
+
+    return predicted_label, confidence
+
+
+# --------------------------------------------------
+# UI
+# --------------------------------------------------
+
+st.title("🌿 Plant Disease Classifier")
+
+st.write(
+    "Upload a plant leaf image to predict the disease."
+)
+
+
+uploaded_image = st.file_uploader(
+    "📂 Upload Leaf Image",
+    type=["png", "jpg", "jpeg"]
+)
+
+
+if uploaded_image is not None:
+
+    try:
+
+        image = Image.open(uploaded_image)
+
+        col1, col2 = st.columns(2)
+
+        with col1:
+
+            st.image(
+                image,
+                caption="Uploaded Image",
+                width=250
+            )
+
+        with col2:
+
+            if st.button(
+                "🔍 Classify",
+                type="primary"
+            ):
+
+                with st.spinner(
+                    "Analyzing image..."
+                ):
+
+                    label, confidence = (
+                        predict_image_class(
+                            model,
+                            image,
+                            class_indices
+                        )
                     )
-                )
-
-                # --------------------------------------------
-                # Prediction result
-                # --------------------------------------------
 
                 st.success(
-                    f"🌱 Prediction: {predicted_label}"
+                    f"🌱 Prediction: {label}"
                 )
 
                 st.info(
-                    "📊 Confidence: "
+                    f"📊 Confidence: "
                     f"{confidence * 100:.2f}%"
                 )
 
-            except Exception as e:
+    except Exception as e:
 
-                st.error(
-                    "❌ Prediction failed."
-                )
+        st.error(
+            "❌ Failed to process the image."
+        )
 
-                st.exception(e)
+        st.exception(e)
