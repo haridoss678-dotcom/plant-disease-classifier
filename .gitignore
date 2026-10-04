@@ -1,0 +1,29 @@
+# Python virtual environments
+.venv/
+venv/
+env/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Environment / credentials
+.env
+.env.*
+credential.toml
+
+# IDE
+.idea/
+.vscode/
+
+# Logs
+*.log
+
+# Testing / cache
+.pytest_cache/
+.mypy_cache/
+
+# Large ML model
+trained_model/*.h5
